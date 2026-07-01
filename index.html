@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTN Downloader</title>
+<style>
+    body { font-family: Arial, sans-serif; }
+    h1 { text-align: center; }
+    h2 {font-size: 32px;}
+    p {font-size: 20px;}
+    .container { max-width: 80%; margin: 20px auto; padding: 20px; border: 1px solid #ccc; }
+    .description { color: #666;  text-align: center;}
+    input { margin: 10px 0; display: inline-block; vertical-align: middle; line-height: 20px;}
+    #filename, #progress-info { margin: 10px 0; }
+    #progress-bar { width: 30%; background-color: #ddd; }
+    #progress-bar-fill { height: 20px; background-color: #4CAF50; width: 0%; text-align: center; line-height: 20px; color: white; }
+    button { margin: 10px 5px; padding: 10px 20px; }
+    #missing-slices-text { width: 100%; min-height: 70px; box-sizing: border-box; margin: 8px 0; font-family: monospace; }
+</style>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="assets/jsQR.js"></script>
+<script src="https://unpkg.com/jquery@3.6.0/dist/jquery.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <h1>OTN Downloader</h1>
+    <p class="description">基于光学传输网络的单向下载工具</p>
+    <h2>设置</h2>
+    <div>
+      <span>FPS
+        <input type="number" id="fpsInput" placeholder="输入 FPS" value="60">
+      </span>
+      </div>
+    <button onclick="startDownload()">开始</button>
+    <div>
+      <span>二维码图片
+        <input type="file" id="imageInput" accept="image/*" multiple onchange="scanImageFiles(this.files)">
+      </span>
+    </div>
+    <h2>下载</h2>
+    <button onclick="clearData()">清空</button>
+    <div>下载文件名: <span id="filename"></span></div>
+    <div id="progress-bar">
+        <div id="progress-bar-fill">0%</div>
+    </div>
+    <div id="progress-info">下载进度: 0%</div>
+    <div id="progress-slice">切片进度: </div>
+    <div id="progress-slice-miss">切片缺失: </div>
+    <div>
+      <div>完整缺失序列:</div>
+      <textarea id="missing-slices-text" readonly></textarea>
+    </div>
+    <div id="progress-slice-current">当前切片: </div>
+    <div id="estimated-time">预计完成时间: --:--:--</div>
+    <div>错误信息: <pre id="error-text"></pre></div>
+    <div>识别详情:
+      <pre id="detail-text"></pre>
+    </div>
+    <div>
+      <div style="width: 500px" id="reader"></div>
+      <div style="display: none" id="file-reader"></div>
+    </div>
+</div>
+<script>
+    let progress = 0;
+    const progressBar = document.getElementById('progress-bar-fill');
+    const progressInfo = document.getElementById('progress-info');
+    const estimatedTime = document.getElementById('estimated-time');
+
+    function splitN(str, separator, n) {
+      const result = str.split(separator);
+      if (result.length <= n) return result;
+      return [...result.slice(0, n - 1), result.slice(n - 1).join(separator)];
+    }
+
+    function estimateRemainingTime(startAt, now, index, total) {
+      const elapsedTime = now - startAt;
+      const progress = index / total;
+      if (progress === 0) {
+        return '--:--:--';
+      }
+      const estimatedRemainingTime = (elapsedTime / progress) * (1 - progress);
+      const remainingSeconds = Math.ceil(estimatedRemainingTime / 1000);
+      const hours = Math.floor(remainingSeconds / 3600);
+      const minutes = Math.floor((remainingSeconds % 3600) / 60);
+      const seconds = remainingSeconds % 60;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function updateProgress(index, total) {
+      if (total === 0) {
+        return;
+      }
+      const percent = index*100.0/total;
+      if (isNaN(percent)) {
+        return;
+      }
+
+      progress = percent;
+      progressBar.style.width = progress + '%';
+      progressBar.textContent = progress + '%';
+      progressInfo.textContent = `下载进度: ${progress}%`;
+    }
+
+    function newEmptyRequest() {
+      var request = {
+        lock: {},
+        meta: {
+          filename: '',
+          total: 0,
+          file_size: 0,
+          chunk_size: 0,
+        },
+        data: {},
+        download: false,
+        startAt: new Date(),
+        currentIndex: 0,
+      };
+      return request;
+    }
+
+    var html5QrcodeScanner = null;
+    var fileQrCode = null;
+    var globalRequest = newEmptyRequest();
+
+    function syncGlobalRquest() {
+      $('#filename').text(globalRequest.meta.filename);
+      const index = Object.keys(globalRequest.lock).length;
+      const total = globalRequest.meta.total;
+      updateProgress(index, total);
+
+      $('#progress-slice').text(`切片进度: ${index}/${total}`);
+      $('#progress-slice-current').text(`当前切片: ${globalRequest.currentIndex}`);
+
+      if (index >= 0 && total > 0) {
+        const timeLeft = estimateRemainingTime(globalRequest.startAt, new Date(), index, total)
+        estimatedTime.textContent = `预计完成时间: ${timeLeft}`;
+      }
+      if (total >0 && index < total) {
+        let missIndex = [];
+        for (let i =0; i < total; i ++) {
+          if(!globalRequest.lock[i]) {
+            missIndex.push(i);
+          }
+        }
+        const missPreview = missIndex.slice(0, 10);
+        if (missIndex.length > 10) {
+          missPreview.push("...");
+        }
+        $('#progress-slice-miss').text(`切片缺失: ${missPreview.join(" ")}`);
+        $('#missing-slices-text').val(missIndex.join(" "));
+      } else {
+        $('#progress-slice-miss').text(`切片缺失: `);
+        $('#missing-slices-text').val('');
+      }
+
+      if (index === total && total > 0 && globalRequest.download === false){
+        downloadFinish();
+        globalRequest.download = true;
+      }
+    }
+
+    function processText(decodedText) {
+      let dataArray = splitN(decodedText, ":", 3)
+      if (dataArray.length < 3) {
+        return;
+      }
+      let key = dataArray[0];
+      let index = dataArray[1];
+      let value = dataArray[2];
+      if (key === 'm') {
+        if (index === 'json') {
+          if (globalRequest.meta.total === 0){
+            globalRequest.startAt = new Date();
+          }
+
+          let obj = JSON.parse(value);
+          globalRequest.meta.filename = obj.filename;
+          globalRequest.meta.total = obj.total;
+          globalRequest.meta.file_size = obj.file_size;
+          globalRequest.meta.chunk_size = obj.chunk_size;
+        }
+      } else if (key === 'd') {
+        globalRequest.currentIndex = index;
+        if (!globalRequest.lock[index]) {
+          globalRequest.lock[index] = 1;
+          globalRequest.data[index] = value;
+        }
+      }
+      syncGlobalRquest();
+    }
+
+    function onScanSuccess(decodedText, decodedResult) {
+        console.log(decodedText, decodedResult);
+        try {
+          processText(decodedText);
+        } catch (err) {
+          $("#error-text").text(err.stack || "错误");
+          $('#detail-text').text(decodedText);
+        }
+    }
+
+    function initScanner(){
+      if (html5QrcodeScanner !== null) {
+        return
+      }
+
+      var fpsText = $("#fpsInput").val();
+      var fpsNumber = parseInt(fpsText, 10);
+      if (isNaN(fpsNumber)) {
+        fpsNumber = 10;
+      }
+
+      html5QrcodeScanner = new Html5QrcodeScanner("reader", {
+        fps: fpsNumber,
+        qrbox: 250,
+      });
+      html5QrcodeScanner.render(onScanSuccess);
+    }
+
+    function clearData() {
+      progress = 0;
+      updateProgress(0, 100);
+      globalRequest = newEmptyRequest();
+      syncGlobalRquest();
+      $('#detail-text').text('');
+      $('#error-text').text('');
+    }
+
+    function startDownload() {
+      clearData();
+      initScanner();
+    }
+
+    function decodeBase64StringsToUint8Array(base64Strings, expectedSize) {
+      const decodedStrings = [];
+      let totalLength = 0;
+
+      base64Strings.forEach(base64 => {
+          const padding = '='.repeat((4 - base64.length % 4) % 4);
+          const decodedString = window.atob(base64 + padding);
+          decodedStrings.push(decodedString);
+          totalLength += decodedString.length;
+      });
+
+      const mergedArray = new Uint8Array(totalLength);
+      let offset = 0;
+
+      decodedStrings.forEach(decodedString => {
+          const tempArray = new Uint8Array(decodedString.length);
+          for (let i = 0; i < decodedString.length; i++) {
+              tempArray[i] = decodedString.charCodeAt(i);
+          }
+
+          mergedArray.set(tempArray, offset);
+          offset += tempArray.length;
+      });
+
+      if (expectedSize > 0 && mergedArray.length > expectedSize) {
+        return mergedArray.slice(0, expectedSize);
+      }
+      return mergedArray;
+    }
+
+    function createBlobWithData(filename, dataArray) {
+      const blob = new Blob([dataArray], { type: 'application/octet-stream' });
+      // 触发下载
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function downloadFinish() {
+      let base64Strings = [];
+      for (let i = 0; i < globalRequest.meta.total; i++) {
+        base64Strings.push(globalRequest.data[String(i)]);
+      }
+      const dataArray = decodeBase64StringsToUint8Array(base64Strings, globalRequest.meta.file_size);
+      createBlobWithData(globalRequest.meta.filename, dataArray);
+    }
+
+    async function scanImageFiles(files) {
+      if (!files || files.length === 0) {
+        return;
+      }
+
+      if (fileQrCode === null) {
+        fileQrCode = new Html5Qrcode("file-reader");
+      }
+
+      let success = 0;
+      let failed = [];
+      const allFiles = Array.from(files);
+
+      for (let i = 0; i < allFiles.length; i++) {
+        const file = allFiles[i];
+        $('#detail-text').text(`正在识别图片: ${i + 1}/${allFiles.length} ${file.name}`);
+        try {
+          const decodedText = await scanImageFileWithFallbacks(file);
+          processText(decodedText);
+          success++;
+        } catch (err) {
+          failed.push(`${file.name}: ${formatError(err)}`);
+        }
+      }
+
+      const failedText = failed.length > 0 ? `\n失败:\n${failed.slice(0, 20).join("\n")}` : '';
+      $('#detail-text').text(`图片识别完成: ${success}/${allFiles.length}${failedText}`);
+      $('#imageInput').val('');
+    }
+
+    async function scanImageFileWithFallbacks(file) {
+      const attempts = [{ name: '原图', file }];
+
+      try {
+        const variants = await createImageScanVariants(file);
+        attempts.push(...variants);
+      } catch (err) {
+        console.warn('create image variants failed', err);
+      }
+
+      let lastError = null;
+      for (const attempt of attempts) {
+        try {
+          const decodedText = await fileQrCode.scanFile(attempt.file, false);
+          console.log(`image decoded with html5-qrcode ${attempt.name}`, file.name);
+          return decodedText;
+        } catch (err) {
+          lastError = err;
+          console.log(`html5-qrcode failed with ${attempt.name}`, file.name, err);
+        }
+
+        try {
+          const decodedText = await scanImageFileWithJsQR(attempt.file);
+          console.log(`image decoded with jsQR ${attempt.name}`, file.name);
+          return decodedText;
+        } catch (err) {
+          lastError = err;
+          console.log(`jsQR failed with ${attempt.name}`, file.name, err);
+        }
+      }
+
+      throw lastError || new Error('未识别到二维码');
+    }
+
+    async function scanImageFileWithJsQR(file) {
+      if (typeof jsQR !== 'function') {
+        throw new Error('jsQR 未加载');
+      }
+
+      const image = await loadImageFromFile(file);
+      try {
+        const sourceWidth = image.naturalWidth || image.width;
+        const sourceHeight = image.naturalHeight || image.height;
+        const canvas = document.createElement('canvas');
+        canvas.width = sourceWidth;
+        canvas.height = sourceHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(image, 0, 0, sourceWidth, sourceHeight);
+        const imageData = ctx.getImageData(0, 0, sourceWidth, sourceHeight);
+        const result = jsQR(imageData.data, sourceWidth, sourceHeight, {
+          inversionAttempts: 'attemptBoth',
+        });
+
+        if (!result || !result.data) {
+          throw new Error('jsQR 未识别到二维码');
+        }
+        return result.data;
+      } finally {
+        URL.revokeObjectURL(image.src);
+      }
+    }
+
+    async function createImageScanVariants(file) {
+      const image = await loadImageFromFile(file);
+      const variants = [];
+      const configs = [
+        { maxSide: 2400, mode: 'normal' },
+        { maxSide: 1600, mode: 'normal' },
+        { maxSide: 2400, mode: 'contrast' },
+        { maxSide: 1600, mode: 'threshold' },
+      ];
+
+      for (const config of configs) {
+        variants.push({
+          name: `${config.mode}-${config.maxSide}`,
+          file: await imageToPngFile(image, file.name, config.maxSide, config.mode),
+        });
+      }
+
+      URL.revokeObjectURL(image.src);
+      return variants;
+    }
+
+    function loadImageFromFile(file) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('图片加载失败'));
+        image.src = URL.createObjectURL(file);
+      });
+    }
+
+    function imageToPngFile(image, originalName, maxSide, mode) {
+      const sourceWidth = image.naturalWidth || image.width;
+      const sourceHeight = image.naturalHeight || image.height;
+      const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+      const width = Math.max(1, Math.round(sourceWidth * scale));
+      const height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(image, 0, 0, width, height);
+
+      if (mode === 'contrast' || mode === 'threshold') {
+        enhanceCanvasForQRCode(ctx, width, height, mode);
+      }
+
+      return new Promise((resolve, reject) => {
+        canvas.toBlob(blob => {
+          if (!blob) {
+            reject(new Error('图片预处理失败'));
+            return;
+          }
+          const safeName = originalName.replace(/\.[^.]+$/, '');
+          resolve(new File([blob], `${safeName}.${mode}.${maxSide}.png`, { type: 'image/png' }));
+        }, 'image/png');
+      });
+    }
+
+    function enhanceCanvasForQRCode(ctx, width, height, mode) {
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+        let value;
+        if (mode === 'threshold') {
+          value = gray > 145 ? 255 : 0;
+        } else {
+          value = Math.max(0, Math.min(255, (gray - 128) * 1.8 + 128));
+        }
+        data[i] = value;
+        data[i + 1] = value;
+        data[i + 2] = value;
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    function formatError(err) {
+      if (!err) {
+        return '未知错误';
+      }
+      if (typeof err === 'string') {
+        return err;
+      }
+      return err.message || err.toString();
+    }
+</script>
+</body>
+</html>

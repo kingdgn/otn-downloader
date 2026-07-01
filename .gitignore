@@ -1,0 +1,11 @@
+otn-downloader
+otn-downloader.exe
+otn-downloader.cmd
+*.test
+qr-out*/
+certs/
+*.key
+*.csr
+*.crt
+*.cer
+https-server.py
