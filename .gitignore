@@ -2,6 +2,7 @@ otn-downloader
 otn-downloader.exe
 otn-downloader.cmd
 *.test
+dist/
 qr-out*/
 certs/
 *.key

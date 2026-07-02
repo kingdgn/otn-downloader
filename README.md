@@ -22,13 +22,37 @@ https://你的用户名.github.io/仓库名/
 
 ## 快速开始
 
-1. 安装命令行工具：
+### 方式一：下载预编译版本
+
+不想安装 Go 的用户，直接下载 GitHub Releases 里的可执行文件：
+
+```text
+https://github.com/kingdgn/otn-downloader/releases/latest
+```
+
+Windows 用户可下载：
+
+```text
+otn-downloader-windows-amd64.exe
+```
+
+然后在 PowerShell 中运行：
+
+```powershell
+.\otn-downloader-windows-amd64.exe encode --fps 8 --loop 3 --chunk-size 120 -f example.zip
+```
+
+### 方式二：用 Go 安装
+
+如果已经安装 Go，也可以安装命令行工具：
 
 ```bash
 go install github.com/kingdgn/otn-downloader@main
 ```
 
-2. 手机打开在线接收页：
+### 接收与发送
+
+手机打开在线接收页：
 
 ```text
 https://kingdgn.github.io/otn-downloader/
@@ -36,7 +60,7 @@ https://kingdgn.github.io/otn-downloader/
 
 点击“开始”，允许摄像头权限。
 
-3. 电脑端发送文件：
+电脑端发送文件：
 
 ```bash
 otn-downloader encode --fps 8 --loop 3 --chunk-size 120 -f example.zip
