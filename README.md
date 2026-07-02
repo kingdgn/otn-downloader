@@ -42,6 +42,19 @@ otn-downloader-windows-amd64.exe
 .\otn-downloader-windows-amd64.exe encode --fps 8 --loop 3 --chunk-size 120 -f example.zip
 ```
 
+CentOS / Linux amd64 用户可下载：
+
+```text
+otn-downloader-centos-amd64
+```
+
+然后执行：
+
+```bash
+chmod +x ./otn-downloader-centos-amd64
+./otn-downloader-centos-amd64 encode --fps 8 --loop 3 --chunk-size 120 -f example.zip
+```
+
 ### 方式二：用 Go 安装
 
 如果已经安装 Go，也可以安装命令行工具：
